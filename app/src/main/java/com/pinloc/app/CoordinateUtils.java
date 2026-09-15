@@ -1,4 +1,4 @@
-﻿package com.pinloc.app;
+package com.pinloc.app;
 
 /**
  * 坐标工具（v2.0 重构）：范围校验、GCJ02↔WGS84 转换、距离/方向计算。

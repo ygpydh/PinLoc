@@ -1,4 +1,4 @@
-﻿package com.pinloc.app;
+package com.pinloc.app;
 
 /**
  * 反射小工具：跨版本按名查找类（找不到返回 null，不抛异常）。

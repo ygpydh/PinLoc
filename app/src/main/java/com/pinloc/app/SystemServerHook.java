@@ -1,4 +1,4 @@
-﻿package com.pinloc.app;
+package com.pinloc.app;
 
 import android.location.GnssStatus;
 import android.location.Location;

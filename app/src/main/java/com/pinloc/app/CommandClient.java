@@ -1,4 +1,4 @@
-﻿package com.pinloc.app;
+package com.pinloc.app;
 
 import android.content.Context;
 import android.location.LocationManager;
