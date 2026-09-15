@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.pinloc.app">
+
+    <uses-sdk
+        android:minSdkVersion="26"
+        android:targetSdkVersion="34" />
+
+    <!-- 虚拟定位模块声明（作为普通应用使用这些权限以便后续扩展真实定位读取） -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- 高德地图底图 / POI 搜索需要联网加载瓦片与检索结果 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      libxposed 模块声明不再使用 xposedmodule meta-data：
+      入口/作用域/API 版本统一由 META-INF/xposed/（java_init.list、scope.list、module.prop）声明。
+      模块名称与描述使用标准 android:label / android:description。
+    -->
+    <application
+        android:label="PinLoc"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:description="@string/module_description"
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustPan">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

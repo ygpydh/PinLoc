@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="module_description">虚拟定位模块：系统定位模拟 / 跨进程命令通道 / 基站防检测</string>
+</resources>

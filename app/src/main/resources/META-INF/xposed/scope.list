@@ -1,0 +1,11 @@
+system
+com.android.phone
+com.android.bluetooth
+com.android.location.fused
+com.xiaomi.location.fused
+com.oplus.location
+com.huawei.location.lite
+com.huawei.location
+com.vivo.location
+com.hihonor.location
+com.google.android.gms
