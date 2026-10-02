@@ -49,21 +49,10 @@ public final class MockState {
     // ---- extras 字段名 ----
     public static final String KEY_LAT = "lat";
     public static final String KEY_LON = "lon";
-    public static final String KEY_SPEED = "speed";
-    public static final String KEY_ALTITUDE = "altitude";
-    public static final String KEY_ACCURACY = "accuracy";
-    public static final String KEY_BEARING = "bearing";
-    public static final String KEY_SATELLITES = "satellites";
-    public static final String KEY_MAX_CN0 = "max_cn0";
-    public static final String KEY_MEAN_CN0 = "mean_cn0";
-    /** 为 true 表示该字段留空，从真实 Location 拷贝 */
-    public static final String KEY_HAS_ALTITUDE = "has_altitude";
-    public static final String KEY_HAS_ACCURACY = "has_accuracy";
-    public static final String KEY_HAS_SPEED = "has_speed";
-    public static final String KEY_HAS_BEARING = "has_bearing";
-    public static final String KEY_HAS_SATELLITES = "has_satellites";
-    public static final String KEY_HAS_MAX_CN0 = "has_max_cn0";
-    public static final String KEY_HAS_MEAN_CN0 = "has_mean_cn0";
+    /** 卫星伪装总开关（布尔）：开=GnssSpoof 造 24 颗多星座，关=放行真实 GnssStatus */
+    public static final String KEY_SATELLITE_SPOOF = "satellite_spoof";
+    /** 定位伪装抖动开关（布尔）：开=OU 物理漂移 ±4m，关=静态钉点 */
+    public static final String KEY_LOCATION_JITTER = "location_jitter";
     /** Hook 回写：命令已被框架处理（不要用 sendExtraCommand 的系统返回值当开关） */
     public static final String KEY_ACK = "ack";
     /** Hook 回写：当前是否正在模拟 */
@@ -91,28 +80,36 @@ public final class MockState {
      */
     private static volatile boolean authorityProcess = true;
 
-    /** 目标参数 */
+    /** 目标坐标（WGS-84） */
     private static double lat = 39.9042;        // 默认：北京
     private static double lon = 116.4074;
-    private static double altitude = 80.0;
-    private static float accuracy = 25.0f;
-    private static float speed = 0.0f;
-    private static float bearing = 0.0f;
-    private static boolean hasAltitude = false;
-    private static boolean hasAccuracy = false;
-    private static boolean hasSpeed = false;
-    private static boolean hasBearing = false;
-    private static int satellites = 12;
-    private static int maxCn0 = 38;
-    private static int meanCn0 = 28;
-    private static boolean hasSatellites = false;
-    private static boolean hasMaxCn0 = false;
-    private static boolean hasMeanCn0 = false;
+    /** 卫星伪装总开关（默认开）。开→GnssSpoof 造 24 颗多星座；关→放行真实 GnssStatus/NMEA。 */
+    private static boolean satelliteSpoofEnabled = true;
+    /** 定位抖动开关（默认开）。开→OU 物理漂移 ±4m；关→静态钉点。 */
+    private static boolean locationJitterEnabled = true;
+    /** GnssSpoof 默认造几颗多星座卫星 */
+    private static final int DEFAULT_SPOOF_SATELLITES = 24;
+    /** OU 抖动开时自动写的 Location 精度（米），和 ±4m 漂移自洽 */
+    private static final float DEFAULT_ACCURACY = 5.0f;
 
     /** 已推进坐标与上次推进时间 */
     private static double curLat = lat;
     private static double curLon = lon;
     private static long lastMoveTime = 0L;
+
+    /**
+     * Ornstein-Uhlenbeck 物理抖动状态（米，相对目标点）。
+     * 均值回归系数 alpha=0.05/s，稳态 1σ≈1.33m（3σ≈4m 硬限）。
+     * 每 1 秒最多走一步，高频回调复用同一步结果。
+     */
+    private static double jitterNorthM = 0.0;
+    private static double jitterEastM = 0.0;
+    private static long lastJitterStepMs = 0L;
+    private static final double OU_ALPHA = 0.05;
+    private static final double OU_SIGMA = 0.42;       // m/√s → 稳态 σ≈1.33m
+    private static final double OU_MAX_OFFSET_M = 4.0; // 3σ 硬限
+    private static final long OU_STEP_MS = 1000L;
+    private static final java.util.Random OU_RAND = new java.util.Random();
 
     private static final Object LOCK = new Object();
 
@@ -219,25 +216,25 @@ public final class MockState {
 
     public static float speed() {
         synchronized (LOCK) {
-            return speed;
+            return 0f;
         }
     }
 
     public static double altitude() {
         synchronized (LOCK) {
-            return altitude;
+            return 0.0;
         }
     }
 
     public static float accuracy() {
         synchronized (LOCK) {
-            return accuracy;
+            return DEFAULT_ACCURACY;
         }
     }
 
     public static float bearing() {
         synchronized (LOCK) {
-            return bearing;
+            return 0f;
         }
     }
 
@@ -340,84 +337,15 @@ public final class MockState {
         }
     }
 
-    /** 调用方须持有 LOCK。空白字段用 has_*=false 表示跟真实。 */
+    /** 调用方须持有 LOCK。只处理两个布尔开关。 */
     private static boolean applyCamouflageLocked(Bundle extras) {
         boolean any = false;
-        if (extras.containsKey(KEY_HAS_ALTITUDE)) {
-            hasAltitude = extras.getBoolean(KEY_HAS_ALTITUDE);
-            if (hasAltitude) {
-                altitude = extras.getDouble(KEY_ALTITUDE);
-            }
-            any = true;
-        } else if (extras.containsKey(KEY_ALTITUDE)) {
-            hasAltitude = true;
-            altitude = extras.getDouble(KEY_ALTITUDE);
+        if (extras.containsKey(KEY_SATELLITE_SPOOF)) {
+            satelliteSpoofEnabled = extras.getBoolean(KEY_SATELLITE_SPOOF);
             any = true;
         }
-        if (extras.containsKey(KEY_HAS_ACCURACY)) {
-            hasAccuracy = extras.getBoolean(KEY_HAS_ACCURACY);
-            if (hasAccuracy) {
-                accuracy = extras.getFloat(KEY_ACCURACY);
-            }
-            any = true;
-        } else if (extras.containsKey(KEY_ACCURACY)) {
-            hasAccuracy = true;
-            accuracy = extras.getFloat(KEY_ACCURACY);
-            any = true;
-        }
-        if (extras.containsKey(KEY_HAS_SPEED)) {
-            hasSpeed = extras.getBoolean(KEY_HAS_SPEED);
-            if (hasSpeed) {
-                speed = extras.getFloat(KEY_SPEED);
-            }
-            any = true;
-        } else if (extras.containsKey(KEY_SPEED)) {
-            hasSpeed = true;
-            speed = extras.getFloat(KEY_SPEED);
-            any = true;
-        }
-        if (extras.containsKey(KEY_HAS_BEARING)) {
-            hasBearing = extras.getBoolean(KEY_HAS_BEARING);
-            if (hasBearing) {
-                bearing = extras.getFloat(KEY_BEARING);
-            }
-            any = true;
-        } else if (extras.containsKey(KEY_BEARING)) {
-            hasBearing = true;
-            bearing = extras.getFloat(KEY_BEARING);
-            any = true;
-        }
-        if (extras.containsKey(KEY_HAS_SATELLITES)) {
-            hasSatellites = extras.getBoolean(KEY_HAS_SATELLITES);
-            if (hasSatellites) {
-                satellites = extras.getInt(KEY_SATELLITES);
-            }
-            any = true;
-        } else if (extras.containsKey(KEY_SATELLITES)) {
-            hasSatellites = true;
-            satellites = extras.getInt(KEY_SATELLITES);
-            any = true;
-        }
-        if (extras.containsKey(KEY_HAS_MAX_CN0)) {
-            hasMaxCn0 = extras.getBoolean(KEY_HAS_MAX_CN0);
-            if (hasMaxCn0) {
-                maxCn0 = extras.getInt(KEY_MAX_CN0);
-            }
-            any = true;
-        } else if (extras.containsKey(KEY_MAX_CN0)) {
-            hasMaxCn0 = true;
-            maxCn0 = extras.getInt(KEY_MAX_CN0);
-            any = true;
-        }
-        if (extras.containsKey(KEY_HAS_MEAN_CN0)) {
-            hasMeanCn0 = extras.getBoolean(KEY_HAS_MEAN_CN0);
-            if (hasMeanCn0) {
-                meanCn0 = extras.getInt(KEY_MEAN_CN0);
-            }
-            any = true;
-        } else if (extras.containsKey(KEY_MEAN_CN0)) {
-            hasMeanCn0 = true;
-            meanCn0 = extras.getInt(KEY_MEAN_CN0);
+        if (extras.containsKey(KEY_LOCATION_JITTER)) {
+            locationJitterEnabled = extras.getBoolean(KEY_LOCATION_JITTER);
             any = true;
         }
         return any;
@@ -429,16 +357,11 @@ public final class MockState {
         }
     }
 
-    /** 应用一组完整参数（UI 一次性下发用） */
-    public static void apply(double newLat, double newLon, double newAlt,
-                             float newSpeed, float newAccuracy, float newBearing) {
+    /** 应用新坐标（UI 选点后调用） */
+    public static void apply(double newLat, double newLon) {
         synchronized (LOCK) {
             lat = newLat;
             lon = newLon;
-            altitude = newAlt;
-            speed = newSpeed;
-            accuracy = newAccuracy;
-            bearing = newBearing;
             curLat = newLat;
             curLon = newLon;
             lastMoveTime = 0L;
@@ -480,36 +403,29 @@ public final class MockState {
             }
             long now = System.currentTimeMillis();
             lastMoveTime = now;
+
+            // OU 抖动（开关关时钉死在选点）
+            double outLat = curLat;
+            double outLon = curLon;
+            if (locationJitterEnabled) {
+                stepJitterLocked(now);
+                outLat = curLat + jitterNorthM / 111320.0;
+                outLon = curLon + jitterEastM / (111320.0 * Math.max(0.01, Math.cos(Math.toRadians(curLat))));
+            }
+
             Location loc = real != null ? new Location(real) : new Location("gps");
             loc.setProvider("gps");
-            loc.setLatitude(curLat);
-            loc.setLongitude(curLon);
+            loc.setLatitude(outLat);
+            loc.setLongitude(outLon);
             loc.setTime(now);
             loc.setElapsedRealtimeNanos(SystemClock.elapsedRealtimeNanos());
 
-            if (hasAltitude) {
-                loc.setAltitude(altitude);
-            } else if (real != null && real.hasAltitude()) {
-                loc.setAltitude(real.getAltitude());
-            }
-
-            if (hasAccuracy) {
-                loc.setAccuracy(accuracy);
-            } else if (real != null && real.hasAccuracy()) {
-                loc.setAccuracy(real.getAccuracy());
-            }
-
-            if (hasSpeed) {
-                loc.setSpeed(speed);
-            } else if (real != null && real.hasSpeed()) {
-                loc.setSpeed(real.getSpeed());
-            }
-
-            if (hasBearing) {
-                loc.setBearing((float) (((bearing % 360.0) + 360.0) % 360.0));
-            } else if (real != null && real.hasBearing()) {
-                loc.setBearing(real.getBearing());
-            }
+            // 海拔跟真实（不硬写）
+            // 精度自动 5m（和 OU ±4m 漂移自洽）
+            loc.setAccuracy(DEFAULT_ACCURACY);
+            // 静止点速度 0
+            loc.setSpeed(0.0f);
+            // 方位跟真实（不硬写）
 
             applyOptionalAccuracies(loc, real);
             applyExtras(loc, real);
@@ -526,41 +442,83 @@ public final class MockState {
         }
     }
 
-    private static void applyOptionalAccuracies(Location loc, Location real) {
-        if (hasSpeed && loc.hasSpeed()) {
-            try {
-                loc.setSpeedAccuracyMetersPerSecond(Math.max(0.3f, Math.abs(loc.getSpeed()) * 0.15f));
-            } catch (Throwable ignored) {}
-        } else if (real != null) {
-            try {
-                if (real.hasSpeedAccuracy()) {
-                    loc.setSpeedAccuracyMetersPerSecond(real.getSpeedAccuracyMetersPerSecond());
-                }
-            } catch (Throwable ignored) {}
+    /**
+     * OU 过程走一步：dX = -α·X·dt + σ·√dt·N(0,1)，3σ 硬限 4m。
+     * 调用方须持有 LOCK。每 1 秒最多走一步，高频回调复用。
+     */
+    private static void stepJitterLocked(long nowMs) {
+        if (nowMs - lastJitterStepMs < OU_STEP_MS) {
+            return;
         }
-        if (hasBearing && loc.hasBearing()) {
-            try {
-                float b = loc.getBearing();
-                loc.setBearingAccuracyDegrees(b == 0.0f ? 1.0f : Math.max(1.0f, loc.getAccuracy() / 5.0f));
-            } catch (Throwable ignored) {}
-        } else if (real != null) {
+        double dt = (nowMs - lastJitterStepMs) / 1000.0;
+        if (lastJitterStepMs == 0L) {
+            // 首次：从零开始
+            lastJitterStepMs = nowMs;
+            return;
+        }
+        if (dt <= 0.0 || dt > 10.0) {
+            // 休眠/挂起后复位，避免坐标跳变
+            jitterNorthM = 0.0;
+            jitterEastM = 0.0;
+            lastJitterStepMs = nowMs;
+            return;
+        }
+        double reversionN = -OU_ALPHA * jitterNorthM * dt;
+        double reversionE = -OU_ALPHA * jitterEastM * dt;
+        double noiseN = OU_SIGMA * Math.sqrt(dt) * OU_RAND.nextGaussian();
+        double noiseE = OU_SIGMA * Math.sqrt(dt) * OU_RAND.nextGaussian();
+        jitterNorthM += reversionN + noiseN;
+        jitterEastM += reversionE + noiseE;
+        // 硬限
+        double off = Math.sqrt(jitterNorthM * jitterNorthM + jitterEastM * jitterEastM);
+        if (off > OU_MAX_OFFSET_M) {
+            double k = OU_MAX_OFFSET_M / off;
+            jitterNorthM *= k;
+            jitterEastM *= k;
+        }
+        lastJitterStepMs = nowMs;
+    }
+
+    /** 当前输出纬度（含 OU 抖动），供 NMEA 拼装用。调用方需自行保证 enabled。 */
+    public static double outputLat() {
+        synchronized (LOCK) {
+            return curLat + jitterNorthM / 111320.0;
+        }
+    }
+
+    /** 当前输出经度（含 OU 抖动），供 NMEA 拼装用。 */
+    public static double outputLon() {
+        synchronized (LOCK) {
+            return curLon + jitterEastM / (111320.0 * Math.max(0.01, Math.cos(Math.toRadians(curLat))));
+        }
+    }
+
+    /**
+     * NMEA GGA 里的在用卫星数。卫星伪装关时返回 -1（不改写 NMEA 卫星数字段）。
+     */
+    public static int usedSatellites() {
+        synchronized (LOCK) {
+            return satelliteSpoofEnabled ? DEFAULT_SPOOF_SATELLITES : -1;
+        }
+    }
+
+    private static void applyOptionalAccuracies(Location loc, Location real) {
+        // speed=0，speed accuracy 给个小值
+        try {
+            loc.setSpeedAccuracyMetersPerSecond(0.5f);
+        } catch (Throwable ignored) {}
+        // bearing 跟真实
+        if (real != null) {
             try {
                 if (real.hasBearingAccuracy()) {
                     loc.setBearingAccuracyDegrees(real.getBearingAccuracyDegrees());
                 }
             } catch (Throwable ignored) {}
         }
-        if (hasAccuracy) {
-            try {
-                loc.setVerticalAccuracyMeters(accuracy);
-            } catch (Throwable ignored) {}
-        } else if (real != null) {
-            try {
-                if (real.hasVerticalAccuracy()) {
-                    loc.setVerticalAccuracyMeters(real.getVerticalAccuracyMeters());
-                }
-            } catch (Throwable ignored) {}
-        }
+        // vertical accuracy 跟水平精度一致
+        try {
+            loc.setVerticalAccuracyMeters(DEFAULT_ACCURACY);
+        } catch (Throwable ignored) {}
         if (Build.VERSION.SDK_INT >= 29) {
             try {
                 if (real != null) {
@@ -579,80 +537,25 @@ public final class MockState {
     }
 
     private static void applyExtras(Location loc, Location real) {
-        Bundle extras = null;
+        // 卫星 extras（satellites/maxCn0/meanCn0）不再手写死值：
+        // GnssStatus 由 GnssSpoof 实时造，Location extras 透传真实值即可，避免交叉校验不一致。
         if (real != null && real.getExtras() != null) {
-            extras = new Bundle(real.getExtras());
-        }
-        if (hasSatellites || hasMaxCn0 || hasMeanCn0) {
-            if (extras == null) {
-                extras = new Bundle();
-            }
-            if (hasSatellites) extras.putInt("satellites", satellites);
-            if (hasMaxCn0) extras.putInt("maxCn0", maxCn0);
-            if (hasMeanCn0) extras.putInt("meanCn0", meanCn0);
-        }
-        if (extras != null) {
-            loc.setExtras(extras);
+            loc.setExtras(new Bundle(real.getExtras()));
         }
     }
 
     /**
-     * 伪造 GNSS 卫星状态：模拟开启时返回 12 颗卫星（8 GPS + 4 GLONASS，
-     * 全部有星历且参与定位解算），让依赖卫星数量的检测逻辑看到"正常定位"；
-     * 未开启时返回 null（放行真实状态）。
-     *
-     * addSatellite 签名随 API 变化（API 24~33 为 8 参数，API 34 起为 12 参数），
-     * 用反射兼容。
+     * 伪造 GNSS 卫星状态。开关 satelliteSpoofEnabled 开 → GnssSpoof 造 24 颗多星座；
+     * 关 → 返回 null（放行真实 GnssStatus）。
      */
     public static GnssStatus buildGnssStatus() {
         synchronized (LOCK) {
-            if (!enabled || !hasSatellites) {
+            if (!enabled || !satelliteSpoofEnabled) {
                 return null;
             }
-            GnssStatus.Builder b = new GnssStatus.Builder();
-            // GPS 1~8 号：信噪比 28~42 dBHz，仰角/方位按序展开
-            for (int sv = 1; sv <= 8; sv++) {
-                addSatellite(b, sv, GnssStatus.CONSTELLATION_GPS,
-                        28f + (sv % 5) * 3.5f,
-                        40f + sv * 5f,
-                        (sv * 45f) % 360f);
-            }
-            // GLONASS 65~68 号
-            for (int sv = 65; sv <= 68; sv++) {
-                addSatellite(b, sv, GnssStatus.CONSTELLATION_GLONASS,
-                        24f + (sv % 4) * 2.5f,
-                        25f + sv * 7f,
-                        (sv * 30f) % 360f);
-            }
-            return b.build();
-        }
-    }
-
-    private static final Method ADD_SAT_8 = findAddSatellite(8);
-    private static final Method ADD_SAT_12 = findAddSatellite(12);
-
-    private static Method findAddSatellite(int params) {
-        for (Method m : GnssStatus.Builder.class.getDeclaredMethods()) {
-            if ("addSatellite".equals(m.getName()) && m.getParameterCount() == params) {
-                m.setAccessible(true);
-                return m;
-            }
-        }
-        return null;
-    }
-
-    private static void addSatellite(GnssStatus.Builder b, int svid, int constellation,
-                                     float cn0, float elev, float az) {
-        try {
-            if (ADD_SAT_12 != null) {
-                ADD_SAT_12.invoke(b, svid, constellation, cn0, elev, az,
-                        true, true, true, false, 0f, false, 0f);
-            } else if (ADD_SAT_8 != null) {
-                ADD_SAT_8.invoke(b, svid, constellation, cn0, elev, az,
-                        true, true, true);
-            }
-        } catch (Throwable ignored) {
-            // 反射失败则跳过该卫星（尽力而为）
+            Object obj = GnssSpoof.getOrCreateGnssStatus(
+                    MockState.class.getClassLoader(), DEFAULT_SPOOF_SATELLITES, null);
+            return obj instanceof GnssStatus ? (GnssStatus) obj : null;
         }
     }
 }
