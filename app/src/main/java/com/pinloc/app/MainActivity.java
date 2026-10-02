@@ -58,13 +58,8 @@ public class MainActivity extends Activity {
     private static final String PREF_AMAP_KEY = "amap_web_key";
     private static final String PREF_FAVS = "fav_list";
     private static final String PREF_COORD_ORDER = "coord_order"; // "lonlat" or "latlon"
-    private static final String PREF_ALTITUDE = "camouflage_altitude";
-    private static final String PREF_ACCURACY = "camouflage_accuracy";
-    private static final String PREF_SPEED = "camouflage_speed";
-    private static final String PREF_BEARING = "camouflage_bearing";
-    private static final String PREF_SATELLITES = "camouflage_satellites";
-    private static final String PREF_MAX_CN0 = "camouflage_max_cn0";
-    private static final String PREF_MEAN_CN0 = "camouflage_mean_cn0";
+    private static final String PREF_SATELLITE_SPOOF = "satellite_spoof";
+    private static final String PREF_LOCATION_JITTER = "location_jitter";
 
     private static final double DEFAULT_LAT = 39.9042;
     private static final double DEFAULT_LON = 116.4074;
@@ -892,8 +887,10 @@ public class MainActivity extends Activity {
     }
 
     private void refreshState() {
-        // 只刷新模块芯片。模拟开关只跟用户点播放键走，轮询不得自行开启。
-        boolean moduleActive = MockState.isModuleActive();
+        // 通过命令通道 ping system_server，ack=true 说明 hook 活着（不读 debug. 系统属性，普通 App 没权限）
+        android.os.Bundle b = new android.os.Bundle();
+        b.putString("action", MockState.ACTION_IS_START);
+        boolean moduleActive = CommandClient.send(this, b);
         moduleStatusChip.setText(moduleActive ? "● 模块已激活" : "○ 模块未激活");
         moduleStatusChip.setTextColor(moduleActive ? 0xFF4CAF50 : 0xFFFFC107);
     }
@@ -1092,45 +1089,11 @@ public class MainActivity extends Activity {
 
     private Bundle camouflageBundle() {
         Bundle b = new Bundle();
-        putOptionalDouble(b, PREF_ALTITUDE, MockState.KEY_HAS_ALTITUDE, MockState.KEY_ALTITUDE);
-        putOptionalFloat(b, PREF_ACCURACY, MockState.KEY_HAS_ACCURACY, MockState.KEY_ACCURACY);
-        putOptionalFloat(b, PREF_SPEED, MockState.KEY_HAS_SPEED, MockState.KEY_SPEED);
-        putOptionalFloat(b, PREF_BEARING, MockState.KEY_HAS_BEARING, MockState.KEY_BEARING);
-        putOptionalInt(b, PREF_SATELLITES, MockState.KEY_HAS_SATELLITES, MockState.KEY_SATELLITES);
-        putOptionalInt(b, PREF_MAX_CN0, MockState.KEY_HAS_MAX_CN0, MockState.KEY_MAX_CN0);
-        putOptionalInt(b, PREF_MEAN_CN0, MockState.KEY_HAS_MEAN_CN0, MockState.KEY_MEAN_CN0);
+        b.putBoolean(MockState.KEY_SATELLITE_SPOOF,
+                prefs().getBoolean(PREF_SATELLITE_SPOOF, true));
+        b.putBoolean(MockState.KEY_LOCATION_JITTER,
+                prefs().getBoolean(PREF_LOCATION_JITTER, true));
         return b;
-    }
-
-    private void putOptionalDouble(Bundle b, String pref, String hasKey, String valKey) {
-        Double v = parseDoubleOrNull(prefStr(pref));
-        b.putBoolean(hasKey, v != null);
-        if (v != null) b.putDouble(valKey, v);
-    }
-
-    private void putOptionalFloat(Bundle b, String pref, String hasKey, String valKey) {
-        Double v = parseDoubleOrNull(prefStr(pref));
-        b.putBoolean(hasKey, v != null);
-        if (v != null) b.putFloat(valKey, v.floatValue());
-    }
-
-    private void putOptionalInt(Bundle b, String pref, String hasKey, String valKey) {
-        Integer v = parseIntOrNull(prefStr(pref));
-        b.putBoolean(hasKey, v != null);
-        if (v != null) b.putInt(valKey, v);
-    }
-
-    private Double parseDoubleOrNull(String s) {
-        if (s == null) return null;
-        String t = s.trim();
-        if (t.isEmpty()) return null;
-        try { return Double.parseDouble(t); } catch (NumberFormatException e) { return null; }
-    }
-
-    private Integer parseIntOrNull(String s) {
-        Double d = parseDoubleOrNull(s);
-        if (d == null) return null;
-        return (int) Math.round(d);
     }
 
     private void pushCamouflageIfSimulating() {
@@ -1141,13 +1104,12 @@ public class MainActivity extends Activity {
     private void showSettingsDialog() {
         final EditText cartoEt = keyInput("粘贴 Carto Basemaps API Key", prefStr("carto_api_key"));
         final EditText amapEt = keyInput("粘贴高德 Web 服务 Key（搜索用）", prefStr(PREF_AMAP_KEY));
-        final EditText altEt = numberInput("海拔（米）", prefStr(PREF_ALTITUDE));
-        final EditText accEt = numberInput("精度（米）", prefStr(PREF_ACCURACY));
-        final EditText spdEt = numberInput("速度（m/s）", prefStr(PREF_SPEED));
-        final EditText brgEt = numberInput("方位（度，0=北）", prefStr(PREF_BEARING));
-        final EditText satEt = numberInput("satellites", prefStr(PREF_SATELLITES));
-        final EditText maxEt = numberInput("maxCn0", prefStr(PREF_MAX_CN0));
-        final EditText meanEt = numberInput("meanCn0", prefStr(PREF_MEAN_CN0));
+        final android.widget.Switch jitterSwitch = new android.widget.Switch(this);
+        jitterSwitch.setText("定位抖动（OU 漂移 ±4m）");
+        jitterSwitch.setChecked(prefs().getBoolean(PREF_LOCATION_JITTER, true));
+        final android.widget.Switch satSwitch = new android.widget.Switch(this);
+        satSwitch.setText("卫星伪装（24 颗多星座 + NMEA）");
+        satSwitch.setChecked(prefs().getBoolean(PREF_SATELLITE_SPOOF, true));
 
         LinearLayout mapBody = new LinearLayout(this);
         mapBody.setOrientation(LinearLayout.VERTICAL);
@@ -1156,51 +1118,17 @@ public class MainActivity extends Activity {
         mapBody.addView(fieldLabel("高德 Key"));
         mapBody.addView(amapEt, fieldLp());
 
-        LinearLayout camouflageBody = new LinearLayout(this);
-        camouflageBody.setOrientation(LinearLayout.VERTICAL);
-        camouflageBody.addView(sectionHint("空白=跟真实。速度/方位只给应用看，不会走路。"));
-        camouflageBody.addView(fieldLabel("海拔"));
-        camouflageBody.addView(altEt, fieldLp());
-        camouflageBody.addView(fieldLabel("精度"));
-        camouflageBody.addView(accEt, fieldLp());
-        camouflageBody.addView(fieldLabel("速度"));
-        camouflageBody.addView(spdEt, fieldLp());
-        camouflageBody.addView(fieldLabel("方位"));
-        camouflageBody.addView(brgEt, fieldLp());
-
-        LinearLayout satBody = new LinearLayout(this);
-        satBody.setOrientation(LinearLayout.VERTICAL);
-        satBody.addView(sectionHint("空白=不造假。填了才写入 Location extras。建议 12 / 38 / 28。"));
-        satBody.addView(fieldLabel("satellites"));
-        satBody.addView(satEt, fieldLp());
-        satBody.addView(fieldLabel("maxCn0"));
-        satBody.addView(maxEt, fieldLp());
-        satBody.addView(fieldLabel("meanCn0"));
-        satBody.addView(meanEt, fieldLp());
-
         AccordionSection mapSec = accordionSection("底图与搜索", mapSummary(cartoEt, amapEt), mapBody);
-        AccordionSection camouflageSec = accordionSection("定位伪装",
-                camouflageSummary(altEt, accEt, spdEt, brgEt), camouflageBody);
-        AccordionSection satSec = accordionSection("卫星 extras",
-                satelliteSummary(satEt, maxEt, meanEt), satBody);
-        final AccordionSection[] sections = {mapSec, camouflageSec, satSec};
-        for (AccordionSection sec : sections) {
-            sec.head.setOnClickListener(v -> toggleAccordion(sec, sections));
-        }
-        bindSummary(cartoEt, amapEt, () -> mapSec.summary.setText(mapSummary(cartoEt, amapEt)));
-        bindSummary(altEt, accEt, spdEt, brgEt,
-                () -> camouflageSec.summary.setText(camouflageSummary(altEt, accEt, spdEt, brgEt)));
-        bindSummary(satEt, maxEt, meanEt,
-                () -> satSec.summary.setText(satelliteSummary(satEt, maxEt, meanEt)));
 
         LinearLayout v = new LinearLayout(this);
         v.setOrientation(LinearLayout.VERTICAL);
         v.setPadding(dp(8), dp(8), dp(8), dp(8));
         v.addView(mapSec.root);
-        v.addView(camouflageSec.root);
-        v.addView(satSec.root);
+        mapSec.head.setOnClickListener(e -> toggleAccordion(mapSec, new AccordionSection[]{mapSec}));
+        v.addView(jitterSwitch);
+        v.addView(satSwitch);
         TextView ver = new TextView(this);
-        ver.setText("v" + APP_VERSION + " · 空白=跟真实");
+        ver.setText("v" + APP_VERSION);
         ver.setTextSize(11);
         ver.setTextColor(TEXT_SECONDARY);
         ver.setGravity(Gravity.CENTER);
@@ -1214,13 +1142,10 @@ public class MainActivity extends Activity {
                     putPrefStr("carto_api_key", cartoEt.getText().toString());
                     updateCartoTileSource(prefStr("carto_api_key"));
                     putPrefStr(PREF_AMAP_KEY, amapEt.getText().toString());
-                    putPrefStr(PREF_ALTITUDE, altEt.getText().toString());
-                    putPrefStr(PREF_ACCURACY, accEt.getText().toString());
-                    putPrefStr(PREF_SPEED, spdEt.getText().toString());
-                    putPrefStr(PREF_BEARING, brgEt.getText().toString());
-                    putPrefStr(PREF_SATELLITES, satEt.getText().toString());
-                    putPrefStr(PREF_MAX_CN0, maxEt.getText().toString());
-                    putPrefStr(PREF_MEAN_CN0, meanEt.getText().toString());
+                    prefs().edit()
+                            .putBoolean(PREF_LOCATION_JITTER, jitterSwitch.isChecked())
+                            .putBoolean(PREF_SATELLITE_SPOOF, satSwitch.isChecked())
+                            .apply();
                     pushCamouflageIfSimulating();
                     statusText.setText("已保存");
                 })
@@ -1350,12 +1275,6 @@ public class MainActivity extends Activity {
                 + " · 精度 " + fmtLive(acc, "m")
                 + " · 速度 " + fmtLive(spd, "m/s")
                 + " · 方位 " + fmtLive(brg, "°");
-    }
-
-    private String satelliteSummary(EditText sat, EditText max, EditText mean) {
-        return "卫星 " + fmtLive(sat, "")
-                + " · maxCn0 " + fmtLive(max, "")
-                + " · meanCn0 " + fmtLive(mean, "");
     }
 
     private TextView sectionHint(String text) {
