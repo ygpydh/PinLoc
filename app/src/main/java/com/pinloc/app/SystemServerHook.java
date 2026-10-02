@@ -50,6 +50,7 @@ public final class SystemServerHook {
             LocationHooks.installFramework(module, cl, "system_server");
         }
         hookWifiScan(module, cl);
+        NmeaSpoof.install(module, cl);
     }
 
     /** getLastLocation / getCurrentLocation / getLastKnownLocation → 模拟位置 */
